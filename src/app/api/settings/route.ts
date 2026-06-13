@@ -2,12 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { sanitizeInput } from '@/lib/utils';
 
-// GET: Load all Resend configurations
 export async function GET() {
   try {
     const configs = await db.resendConfig.findMany();
 
-    // Mask API keys for security: only show last 8 chars
     const maskedConfigs = configs.map(c => ({
       ...c,
       apiKey: c.apiKey
@@ -26,7 +24,6 @@ export async function GET() {
   }
 }
 
-// POST: Create or update a Resend configuration
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -41,7 +38,6 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        // Validate API key format
         if (!apiKey.startsWith('re_')) {
           return NextResponse.json(
             { error: 'La API key debe comenzar con "re_" (formato Resend)' },
@@ -49,7 +45,6 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        // Validate email format
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
         if (!emailRegex.test(senderEmail)) {
           return NextResponse.json(

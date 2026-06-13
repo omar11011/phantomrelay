@@ -48,8 +48,6 @@ export default function Home() {
   });
   const [configError, setConfigError] = useState('');
   const [isSavingConfig, setIsSavingConfig] = useState(false);
-  // No login/logout handlers needed
-
   const loadConfigs = useCallback(async () => {
     setIsLoadingConfigs(true);
     try {
@@ -132,7 +130,7 @@ export default function Home() {
     return resendConfigs.find(c => c.id === selectedConfigId)?.name || 'Desconocido';
   };
 
-  // App
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-950 text-white">
       {/* Header */}

@@ -1,11 +1,10 @@
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'crypto';
 
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || '';
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'anonmail-secret-key-2024';
 const ALGORITHM = 'aes-256-cbc';
 
 function getKey(): Buffer {
-  if (!ENCRYPTION_KEY) throw new Error('ENCRYPTION_KEY no configurada');
-  return scryptSync(ENCRYPTION_KEY, 'phantom-relay-salt', 32);
+  return scryptSync(ENCRYPTION_KEY, 'anonmail-salt', 32);
 }
 
 export function encryptMessage(message: string): string {
@@ -31,10 +30,9 @@ export function decryptMessage(encrypted: string): string {
 export function generateRandomSender(domain: string): { email: string; name: string } {
   const ts = Date.now().toString(36);
   const suffix = randomBytes(2).toString('hex');
-  return {
-    email: `${ts}-${suffix}@${domain}`,
-    name: 'PhantomRelay',
-  };
+  const email = `${ts}-${suffix}@${domain}`;
+  const name = 'PhantomRelay';
+  return { email, name };
 }
 
 export interface SendResult {
@@ -59,11 +57,11 @@ export async function sendAnonymousEmail(
   message: string,
   config?: EmailConfig
 ): Promise<SendResult> {
-  const resendApiKey = config?.apiKey || process.env.RESEND_API_KEY || '';
+  const resendApiKey = config?.apiKey || process.env.RESEND_API_KEY || process.env.SMTP_PASS;
 
   if (resendApiKey && resendApiKey.startsWith('re_')) {
     try {
-      let senderEmail = config?.senderEmail || process.env.SENDER_EMAIL || 'onboarding@resend.dev';
+      let senderEmail = config?.senderEmail || process.env.SENDER_EMAIL || process.env.SMTP_FROM || 'onboarding@resend.dev';
       let senderName = config?.senderName || process.env.SENDER_NAME || 'PhantomRelay';
 
       if (config?.useRandomSender && senderEmail.includes('@')) {
@@ -82,25 +80,38 @@ export async function sendAnonymousEmail(
         body: JSON.stringify({
           from: `${senderName} <${senderEmail}>`,
           to: [to],
-          subject,
+          subject: subject,
           text: message,
           html: buildEmailHtml(subject, message),
-          headers: getPrivacyHeaders(senderEmail),
+          headers: getPrivacyHeaders(),
         }),
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        return { success: true, messageId: data.id, mode: 'api', usedSender: senderEmail };
+        return {
+          success: true,
+          messageId: data.id,
+          mode: 'api',
+          usedSender: senderEmail,
+        };
+      } else {
+        console.error('Resend API error:', JSON.stringify(data));
+        return {
+          success: false,
+          mode: 'simulated',
+          error: `Resend error: ${data.message || 'Unknown error'}`,
+        };
       }
-
-      console.error('Resend API error:', JSON.stringify(data));
-      return { success: false, mode: 'simulated', error: `Resend error: ${data.message || 'Unknown'}` };
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'unknown';
       console.error('Resend API error:', msg);
-      return { success: false, mode: 'simulated', error: `API fallo: ${msg}` };
+      return {
+        success: false,
+        mode: 'simulated',
+        error: `API fallo: ${msg}`,
+      };
     }
   }
 
@@ -108,24 +119,49 @@ export async function sendAnonymousEmail(
   const smtpUser = process.env.SMTP_USER;
   const smtpPass = process.env.SMTP_PASS;
 
-  if (smtpHost && smtpUser && smtpPass) {
+  if (smtpHost && smtpUser && smtpPass && !smtpPass.startsWith('re_')) {
     try {
-      const nodemailer = await import('nodemailer');
+      const nodemailer = await import(/* webpackIgnore: true */ 'nodemailer').catch(() => null);
+      if (!nodemailer) {
+        return {
+          success: false,
+          mode: 'simulated',
+          error: 'nodemailer no instalado',
+        };
+      }
       const smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+
       const transporter = nodemailer.default.createTransport({
-        host: smtpHost, port: smtpPort, secure: smtpPort === 465,
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465,
         auth: { user: smtpUser, pass: smtpPass },
       });
+
       const senderEmail = process.env.SMTP_FROM || smtpUser;
+
       const result = await transporter.sendMail({
-        from: `"PhantomRelay" <${senderEmail}>`, to, subject, text: message,
-        html: buildEmailHtml(subject, message), headers: getPrivacyHeaders(senderEmail),
+        from: `"PhantomRelay" <${senderEmail}>`,
+        to,
+        subject: subject,
+        text: message,
+        html: buildEmailHtml(subject, message),
+        headers: getPrivacyHeaders(),
       });
-      return { success: true, messageId: result.messageId, mode: 'smtp' };
+
+      return {
+        success: true,
+        messageId: result.messageId,
+        mode: 'smtp',
+      };
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'unknown';
       console.error('SMTP error:', msg);
-      return { success: false, mode: 'simulated', error: `SMTP fallo: ${msg}` };
+      return {
+        success: false,
+        mode: 'simulated',
+        error: `SMTP fallo: ${msg}`,
+      };
     }
   }
 
@@ -136,8 +172,15 @@ export async function sendAnonymousEmail(
   };
 }
 
-function getPrivacyHeaders(senderEmail: string): Record<string, string> {
-  return { 'List-Unsubscribe': `mailto:${senderEmail}` };
+function getPrivacyHeaders(): Record<string, string> {
+  return {
+    'X-Mailer': 'PR-Node/3.2',
+    'X-Priority': '3',
+    'X-Anonymized': 'true',
+    'X-No-Track': 'true',
+    Precedence: 'bulk',
+    'X-Auto-Response-Suppress': 'OOF, DR, RN, NRN',
+  };
 }
 
 function buildEmailHtml(subject: string, message: string): string {
@@ -146,26 +189,15 @@ function buildEmailHtml(subject: string, message: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
-  return `<!DOCTYPE html>
-<html lang="es">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
-<body style="margin:0;padding:0;background-color:#f4f5f7;font-family:Arial,Helvetica,sans-serif;">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#f4f5f7;padding:32px 0;">
-    <tr><td align="center">
-      <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.1);">
-        <tr><td style="background:linear-gradient(135deg,#064e3b,#0f766e);padding:24px;text-align:center;">
-          <h1 style="color:#ffffff;margin:0;font-size:20px;font-weight:600;">PhantomRelay</h1>
-        </td></tr>
-        <tr><td style="padding:32px;">
-          <h2 style="color:#111827;margin:0 0 16px;font-size:18px;">${subject}</h2>
-          <div style="color:#374151;font-size:15px;line-height:1.7;white-space:pre-wrap;">${escapedMessage}</div>
-        </td></tr>
-        <tr><td style="padding:16px 32px;border-top:1px solid #e5e7eb;text-align:center;">
-          <p style="color:#9ca3af;font-size:12px;margin:0;">Enviado via PhantomRelay</p>
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
+  return `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="background: linear-gradient(135deg, #064e3b, #0f766e); border-radius: 12px 12px 0 0; padding: 24px; text-align: center;">
+        <h1 style="color: #ecfdf5; margin: 0; font-size: 22px;">Mensaje</h1>
+      </div>
+      <div style="background: #ffffff; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 12px 12px; padding: 24px;">
+        <h2 style="color: #111827; margin: 0 0 16px; font-size: 18px;">${subject}</h2>
+        <div style="color: #374151; font-size: 15px; line-height: 1.7; white-space: pre-wrap;">${escapedMessage}</div>
+      </div>
+    </div>
+  `;
 }
